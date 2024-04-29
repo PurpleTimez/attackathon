@@ -64,7 +64,7 @@ can be used to run your attacks against. Prerequisites to set up this
 network are: 
 * Python3
 * Docker
-* Kubernetes (see [docker desktop instructions if relevant](https://docs.docker.com/desktop/kubernetes/))
+* Kubernetes (see [docker desktop](https://docs.docker.com/desktop/kubernetes/) or [minikube](https://minikube.sigs.k8s.io/docs/start/) instructions)
 * [Just](https://github.com/casey/just)
 * [jq](https://jqlang.github.io/jq)
 
