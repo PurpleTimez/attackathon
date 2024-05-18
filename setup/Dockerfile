@@ -15,8 +15,13 @@ RUN curl https://sh.rustup.rs -sSf | sh -s -- -y
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Create bitcoin conf so that bitcoin-cli just works.
-RUN mkdir -p ~/.bitcoin && \
-    echo "rpcconnect=bitcoind.warnet-armada" >> ~/.bitcoin/bitcoin.conf && \
+RUN mkdir -p ~/.bitcoin
+
+# Copy in bitcoin conf that is a placeholder to custom bitcoin conf
+COPY bitcoin.conf ~/.bitcoin/conf
+
+# Add basics default for lightning node connection.
+RUN echo "rpcconnect=bitcoind.warnet-armada" >> ~/.bitcoin/bitcoin.conf && \
     echo "rpcuser=warnet_user" >> ~/.bitcoin/bitcoin.conf && \
     echo "rpcpassword=2themoon" >> ~/.bitcoin/bitcoin.conf && \
     echo "regtest=1" >> ~/.bitcoin/bitcoin.conf
