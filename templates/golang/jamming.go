@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -285,7 +285,8 @@ func (j *JammingHarness) jammingPayment(ctx context.Context,
 			case <-done:
 				err := dest.Invoices.CancelInvoice(ctx, hash)
 				if err != nil {
-					fmt.Println("Cancel on done failure: ", err)
+					log.Printf("Cancel on done failure: %v",
+						err)
 					return
 				}
 

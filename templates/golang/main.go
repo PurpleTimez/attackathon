@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"log"
 	"os"
 
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -12,17 +12,17 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	lnds, err := getLndNodes(ctx)
 	if err != nil {
-		fmt.Printf("Could not set up connection: %v\n", err)
+		log.Fatalf("Could not set up connection: %v", err)
 		os.Exit(1)
 	}
 
 	target, err := route.NewVertexFromStr(os.Getenv("TARGET"))
 	if err != nil {
-		fmt.Printf("Could not get target node: %v\n", err)
+		log.Fatalf("Could not get target node: %v", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("Starting attack against: %v\n", target)
+	log.Printf("Starting attack against: %v", target)
 	// Write your attack here!
 	//
 	// We've provided two utilities for you:
@@ -36,7 +36,7 @@ func main() {
 	}
 
 	cleanup := func() error {
-		fmt.Println("Cleaning up opened channels for all nodes")
+		log.Println("Cleaning up opened channels for all nodes")
 		if err := graph.CloseAllChannels(ctx, 0); err != nil {
 			return err
 		}
@@ -53,10 +53,10 @@ func main() {
 	}
 
 	if err := cleanup(); err != nil {
-		fmt.Printf("Could not clean up channels: %v\n", err)
+		log.Fatalf("Could not clean up channels: %v", err)
 	}
 
-	fmt.Println("Waiting for threads to shutdown")
+	log.Println("Waiting for threads to shutdown")
 	cancel()
 	jammer.wg.Wait()
 }
