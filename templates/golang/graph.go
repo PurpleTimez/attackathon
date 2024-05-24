@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"sync"
+	"log"
 	"time"
 
 	"github.com/btcsuite/btcd/btcutil"
@@ -16,8 +16,6 @@ import (
 // gossip etc).
 type GraphHarness struct {
 	LndNodes Nodes
-
-	wg sync.WaitGroup
 }
 
 type OpenChannelReq struct {
@@ -130,7 +128,7 @@ func (c *GraphHarness) WaitForChannel(ctx context.Context, lookupNode,
 			}
 		}
 
-		fmt.Printf("Lookup node %v with %v failed: %v\n",
+		log.Printf("Lookup node %v with %v failed: %v\n",
 			pubkey, lookupNode, err)
 
 		select {
@@ -238,8 +236,7 @@ func (c *GraphHarness) CloseAllChannels(ctx context.Context, node int) error {
 				}
 
 			case e := <-errChan:
-				fmt.Printf("Error closing channel: "+
-					"%v\n", e)
+				log.Printf("Error closing channel: %v", e)
 				return e
 
 			case <-ctx.Done():

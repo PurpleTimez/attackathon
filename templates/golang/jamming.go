@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"sync"
 	"time"
 
@@ -49,6 +50,10 @@ type JammingPaymentReq struct {
 
 	// Instruct the receiving node to wait for this duration before settle.
 	SettleWait time.Duration
+
+	// EarlySettle is a channel that when closed, will force the jam payment
+	// to be settled/canceled (possibly earlier than its settle wait time).
+	EarlySettle chan struct{}
 }
 
 type JammingPaymentResp struct {
@@ -64,24 +69,121 @@ type JammingPaymentResp struct {
 	Err error
 }
 
-// JammingPayment assists in creating a payment that can be used for channel
+// SendPaymentFunc is a function type used to abstract lnd's various send
+// payment APIs.
+type SendPaymentFunc func(ctx context.Context, inv string) (
+	<-chan lndclient.PaymentStatus, <-chan error, error)
+
+// JammingPaymentRoute performs a jamming payment using the route provided.
+func (j *JammingHarness) JammingPaymentRoute(ctx context.Context,
+	req JammingPaymentReq, route lndclient.QueryRoutesResponse) (
+	<-chan JammingPaymentResp, error) {
+
+	endorse := routerrpc.HTLCEndorsement_ENDORSEMENT_FALSE
+	if req.EndorseOutgoing {
+		endorse = routerrpc.HTLCEndorsement_ENDORSEMENT_TRUE
+	}
+
+	sendPaymentClosure := func(ctx context.Context, inv string) (
+		<-chan lndclient.PaymentStatus, <-chan error, error) {
+
+		source := j.LndNodes.GetNode(req.SourceIdx)
+
+		b11, err := source.Client.DecodePaymentRequest(ctx, inv)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		// Copy everything because we're re-using this route over and
+		// over (hops are common reference, so we just copy everything).
+		pmtRoute := lndclient.QueryRoutesResponse{
+			TotalTimeLock: route.TotalTimeLock,
+			TotalFeesMsat: route.TotalFeesMsat,
+			TotalAmtMsat:  route.TotalAmtMsat,
+		}
+
+		for _, hop := range route.Hops {
+			pmtRoute.Hops = append(pmtRoute.Hops,
+				&lndclient.Hop{
+					ChannelID:        hop.ChannelID,
+					Expiry:           hop.Expiry,
+					AmtToForwardMsat: hop.AmtToForwardMsat,
+					FeeMsat:          hop.FeeMsat,
+					PubKey:           hop.PubKey,
+					MppRecord:        hop.MppRecord,
+					Metadata:         hop.Metadata,
+				},
+			)
+		}
+
+		// Each invoice we pay will have a different MPP record, so
+		// we set it for our set route here.
+		pmtRoute.Hops[len(pmtRoute.Hops)-1].MppRecord = &lnrpc.MPPRecord{
+			PaymentAddr:  b11.PaymentAddress[:],
+			TotalAmtMsat: int64(b11.Value),
+		}
+
+		pmtChan, errChan := source.Router.SendToRouteV2(
+			ctx,
+			lndclient.SendToRouteRequest{
+				PaymentHash: b11.Hash,
+				Route:       pmtRoute,
+				Endorsed:    endorse,
+			},
+		)
+
+		return pmtChan, errChan, nil
+	}
+
+	return j.jammingPayment(ctx, req, sendPaymentClosure)
+}
+
+// JammingPayment performs a jamming payment using LND's internal pathfinding.
+func (j *JammingHarness) JammingPayment(ctx context.Context,
+	req JammingPaymentReq) (<-chan JammingPaymentResp, error) {
+
+	endorse := routerrpc.HTLCEndorsement_ENDORSEMENT_FALSE
+	if req.EndorseOutgoing {
+		endorse = routerrpc.HTLCEndorsement_ENDORSEMENT_TRUE
+	}
+
+	sendPaymentClosure := func(ctx context.Context, inv string) (
+		<-chan lndclient.PaymentStatus, <-chan error, error) {
+
+		return j.LndNodes.GetNode(req.SourceIdx).Router.SendPayment(
+			ctx,
+			lndclient.SendPaymentRequest{
+				Invoice:         inv,
+				Timeout:         time.Hour,
+				MaxFeeMsat:      lnwire.MaxMilliSatoshi,
+				EndorseOutgoing: endorse,
+			},
+		)
+	}
+
+	return j.jammingPayment(ctx, req, sendPaymentClosure)
+}
+
+// jammingPayment assists in creating a payment that can be used for channel
 // jamming:
 // - Creates a hold invoice on the target node
-// - Pays the invoice from the source node with endorsed set per parameter
+// - Pays the invoice using the payment closure provided
 // - Optionally holds the HTLCs on the recipient for a wait period.
 // - Settles/fails the HTLCs acks as instructed.
 //
 // It returns a channel that will report the outcome of the payment, along with
 // any HTLCs used to pay it.
-func (j *JammingHarness) JammingPayment(ctx context.Context,
-	req JammingPaymentReq) (<-chan (JammingPaymentResp), error) {
-
-	ctx, cancel := context.WithCancel(ctx)
+func (j *JammingHarness) jammingPayment(ctx context.Context,
+	req JammingPaymentReq, sendPmt SendPaymentFunc) (
+	<-chan (JammingPaymentResp), error) {
 
 	// Create a channel for our response.
 	respChan := make(chan JammingPaymentResp, 1)
 
+	// Used to coordinate goroutine shutdown.
+	done := make(chan struct{})
 	preimage := genPreimage()
+
 	hash := preimage.Hash()
 
 	inv, err := j.LndNodes.GetNode(req.DestIdx).Invoices.AddHoldInvoice(
@@ -94,27 +196,12 @@ func (j *JammingHarness) JammingPayment(ctx context.Context,
 		},
 	)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
 
-	endorse := routerrpc.HTLCEndorsement_ENDORSEMENT_FALSE
-	if req.EndorseOutgoing {
-		endorse = routerrpc.HTLCEndorsement_ENDORSEMENT_TRUE
-	}
-
 	sendTime := time.Now()
-	statusChan, pmtErrChan, err := j.LndNodes.GetNode(req.SourceIdx).Router.SendPayment(
-		ctx,
-		lndclient.SendPaymentRequest{
-			Invoice:         inv,
-			Timeout:         time.Hour,
-			MaxFeeMsat:      lnwire.MaxMilliSatoshi,
-			EndorseOutgoing: endorse,
-		},
-	)
+	statusChan, pmtErrChan, err := sendPmt(ctx, inv)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
 
@@ -165,9 +252,7 @@ func (j *JammingHarness) JammingPayment(ctx context.Context,
 
 				invoiceChannel <- i.Htlcs
 
-				select {
-				case <-time.After(wait):
-
+				complete := func() {
 					var err error
 					if req.Settle {
 						err = dest.Invoices.SettleInvoice(
@@ -182,9 +267,26 @@ func (j *JammingHarness) JammingPayment(ctx context.Context,
 						errChan <- err
 						return
 					}
+				}
+
+				select {
+				case <-req.EarlySettle:
+					complete()
+
+				case <-time.After(wait):
+					complete()
 
 				case <-ctx.Done():
 					errChan <- ctx.Err()
+					return
+				}
+
+			// If we're told to shut down, cancel the invoice
+			case <-done:
+				err := dest.Invoices.CancelInvoice(ctx, hash)
+				if err != nil {
+					log.Printf("Cancel on done failure: %v",
+						err)
 					return
 				}
 
@@ -231,6 +333,9 @@ func (j *JammingHarness) JammingPayment(ctx context.Context,
 				}
 				return
 
+			case <-done:
+				return
+
 			case <-ctx.Done():
 				errChan <- ctx.Err()
 				return
@@ -242,9 +347,9 @@ func (j *JammingHarness) JammingPayment(ctx context.Context,
 	j.wg.Add(1)
 	go func() {
 		defer j.wg.Done()
-		// Cancel our context to clean up any goroutines in the case
+		// Close our done channel to clean up any goroutines in the case
 		// where we errored out.
-		defer cancel()
+		defer close(done)
 
 		var htlcs []lndclient.InvoiceHtlc
 
@@ -274,7 +379,7 @@ func (j *JammingHarness) JammingPayment(ctx context.Context,
 
 				// If a payment failed, it may or may not have
 				// reached the recipient node. Exiting here
-				// will cancel our context and clean up our
+				// will close our done channel and clean up our
 				// invoice subscription if the payment never
 				// reached the recipient.
 				default:

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 
 	"github.com/lightninglabs/lndclient"
@@ -43,7 +44,7 @@ func getLndNodes(ctx context.Context) (*LndNodes, error) {
 		return nil, err
 	}
 
-	fmt.Printf("Connected to node 0: %x\n", info.IdentityPubkey)
+	log.Printf("Connected to node 0: %x", info.IdentityPubkey)
 
 	lnd1, err := getLndClient(1)
 	if err != nil {
@@ -55,7 +56,7 @@ func getLndNodes(ctx context.Context) (*LndNodes, error) {
 		return nil, err
 	}
 
-	fmt.Printf("Connected to node 1: %x\n", info.IdentityPubkey)
+	log.Printf("Connected to node 1: %x", info.IdentityPubkey)
 
 	lnd2, err := getLndClient(2)
 	if err != nil {
@@ -66,7 +67,7 @@ func getLndNodes(ctx context.Context) (*LndNodes, error) {
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("Connected to node 2: %x\n", info.IdentityPubkey)
+	log.Printf("Connected to node 2: %x", info.IdentityPubkey)
 
 	return &LndNodes{
 		Lnd0: lnd0.LndServices,
@@ -95,9 +96,10 @@ func getLndClient(nodeIdx int) (*lndclient.GrpcLndServices, error) {
 	}
 
 	return lndclient.NewLndServices(&lndclient.LndServicesConfig{
-		LndAddress:         server,
-		Network:            lndclient.NetworkRegtest,
-		CustomMacaroonPath: macaroon,
-		TLSPath:            cert,
+		LndAddress:            server,
+		Network:               lndclient.NetworkRegtest,
+		CustomMacaroonPath:    macaroon,
+		TLSPath:               cert,
+		BlockUntilChainSynced: true,
 	})
 }
