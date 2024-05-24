@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -176,12 +177,13 @@ func (j *JammingHarness) jammingPayment(ctx context.Context,
 	req JammingPaymentReq, sendPmt SendPaymentFunc) (
 	<-chan (JammingPaymentResp), error) {
 
-	ctx, cancel := context.WithCancel(ctx)
-
 	// Create a channel for our response.
 	respChan := make(chan JammingPaymentResp, 1)
 
+	// Used to coordinate goroutine shutdown.
+	done := make(chan struct{})
 	preimage := genPreimage()
+
 	hash := preimage.Hash()
 
 	inv, err := j.LndNodes.GetNode(req.DestIdx).Invoices.AddHoldInvoice(
@@ -194,14 +196,12 @@ func (j *JammingHarness) jammingPayment(ctx context.Context,
 		},
 	)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
 
 	sendTime := time.Now()
 	statusChan, pmtErrChan, err := sendPmt(ctx, inv)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
 
@@ -281,6 +281,14 @@ func (j *JammingHarness) jammingPayment(ctx context.Context,
 					return
 				}
 
+			// If we're told to shut down, cancel the invoice
+			case <-done:
+				err := dest.Invoices.CancelInvoice(ctx, hash)
+				if err != nil {
+					fmt.Println("Cancel on done failure: ", err)
+					return
+				}
+
 			// If the invoice subscription errors out, just relay
 			// the error to our top level error channel. Channels
 			// are closed on shutdown, so only send an error if
@@ -324,6 +332,9 @@ func (j *JammingHarness) jammingPayment(ctx context.Context,
 				}
 				return
 
+			case <-done:
+				return
+
 			case <-ctx.Done():
 				errChan <- ctx.Err()
 				return
@@ -335,9 +346,9 @@ func (j *JammingHarness) jammingPayment(ctx context.Context,
 	j.wg.Add(1)
 	go func() {
 		defer j.wg.Done()
-		// Cancel our context to clean up any goroutines in the case
+		// Close our done channel to clean up any goroutines in the case
 		// where we errored out.
-		defer cancel()
+		defer close(done)
 
 		var htlcs []lndclient.InvoiceHtlc
 
@@ -367,7 +378,7 @@ func (j *JammingHarness) jammingPayment(ctx context.Context,
 
 				// If a payment failed, it may or may not have
 				// reached the recipient node. Exiting here
-				// will cancel our context and clean up our
+				// will close our done channel and clean up our
 				// invoice subscription if the payment never
 				// reached the recipient.
 				default:
