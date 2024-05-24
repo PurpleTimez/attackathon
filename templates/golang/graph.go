@@ -246,7 +246,9 @@ func (c *GraphHarness) CloseAllChannels(ctx context.Context, node int) error {
 
 	}
 
-	Mine(6)
+	if len(channels) != 0 {
+		Mine(6)
+	}
 
 	return nil
 
